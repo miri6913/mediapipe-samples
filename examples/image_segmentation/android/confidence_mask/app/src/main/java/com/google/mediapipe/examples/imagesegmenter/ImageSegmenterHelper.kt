@@ -111,8 +111,8 @@ class ImageSegmenterHelper(
             val optionsBuilder = ImageSegmenter.ImageSegmenterOptions.builder()
                 .setRunningMode(runningMode)
                 .setBaseOptions(baseOptions)
-                .setOutputCategoryMask(false)
-                .setOutputConfidenceMasks(true)
+                .setOutputCategoryMask(USE_CATEGORY_MASK)
+                .setOutputConfidenceMasks(!USE_CATEGORY_MASK)
 
             if (runningMode == RunningMode.LIVE_STREAM) {
                 optionsBuilder.setResultListener(this::returnSegmentationResult)
@@ -216,6 +216,8 @@ class ImageSegmenterHelper(
         val finishTimeMs = SystemClock.uptimeMillis()
 
         val inferenceTime = finishTimeMs - result.timestampMs()
+        logFps(inferenceTime)
+        if (USE_CATEGORY_MASK) return  // VTO spike: FPS-only experiment, no overlay
 
         // We only need the first mask for this sample because we are using
         // the OutputType CATEGORY_MASK, which only provides a single mask.
@@ -229,6 +231,37 @@ class ImageSegmenterHelper(
                 inferenceTime
             )
         )
+    }
+
+    // VTO spike: log results/sec and mean frame latency (capture -> result) over ~2 s windows.
+    private var fpsWindowStartMs = 0L
+    private var fpsCount = 0
+    private var fpsLatencySumMs = 0L
+
+    private fun logFps(latencyMs: Long) {
+        val now = SystemClock.uptimeMillis()
+        if (fpsWindowStartMs == 0L) fpsWindowStartMs = now
+        fpsCount++
+        fpsLatencySumMs += latencyMs
+        val elapsed = now - fpsWindowStartMs
+        if (elapsed >= 2000) {
+            val modelName = when (currentModel) {
+                MODEL_HAIR_SEGMENTER -> "hair"
+                MODEL_SELFIE_MULTICLASS -> "multiclass"
+                MODEL_SELFIE_SEGMENTER -> "selfie"
+                else -> "deeplab"
+            }
+            val delegateName = if (currentDelegate == DELEGATE_GPU) "GPU" else "CPU"
+            Log.i(
+                "VTO_FPS",
+                "model=$modelName delegate=$delegateName fps=%.1f latency_ms=%.1f".format(
+                    fpsCount * 1000f / elapsed, fpsLatencySumMs.toFloat() / fpsCount
+                )
+            )
+            fpsWindowStartMs = now
+            fpsCount = 0
+            fpsLatencySumMs = 0
+        }
     }
 
     // Return errors thrown during segmentation to this
@@ -249,6 +282,7 @@ class ImageSegmenterHelper(
     )
 
     companion object {
+        const val USE_CATEGORY_MASK = false // VTO spike experiment: category mask output instead of confidence
         const val DELEGATE_CPU = 0
         const val DELEGATE_GPU = 1
         const val OTHER_ERROR = 0
